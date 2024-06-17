@@ -11,8 +11,6 @@ pub struct Args {
     /// Whether to encrypt or decrypt the input
     #[command(subcommand)]
     pub command: Command,
-
-    
 }
 
 #[derive(Subcommand, PartialEq, Eq, Clone)]
@@ -23,9 +21,6 @@ pub enum Command {
 
 #[derive(Parser, PartialEq, Eq, Clone)]
 pub struct EncryptArgs {
-    /// Mode to run the program in
-    pub mode: Mode,
-    
     /// The input path
     pub input: PathBuf,
 
@@ -39,9 +34,6 @@ pub struct EncryptArgs {
 
 #[derive(Parser, PartialEq, Eq, Clone)]
 pub struct DecryptArgs {
-    /// Mode to run the program in
-    pub mode: Mode,
-
     /// The input path
     pub input: PathBuf,
 
@@ -53,6 +45,19 @@ pub struct DecryptArgs {
 pub enum Mode {
     File,
     Folder,
+}
+
+impl From<(PathBuf, PathBuf)> for Mode {
+    fn from(paths: (PathBuf, PathBuf)) -> Self {
+        if paths.0.is_file() && paths.1.is_file() {
+            Self::File
+        } else if paths.0.is_dir() && paths.1.is_dir() {
+            Self::Folder
+        } else {
+            panic!("Input and output paths must be of the same type");
+        }
+    }
+
 }
 
 #[derive(Parser, ValueEnum, Clone, Copy, PartialEq, Eq)]

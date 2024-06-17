@@ -26,13 +26,17 @@ fn main() {
 
     match args.command {
         Command::Encrypt(args) => {
-            match args.mode {
+            let mode = Mode::from((args.input.clone(), args.output.clone()));
+
+            match mode {
                 Mode::File => file_mode(encrypt, args.input, args.output, Some(args.magic)),
                 Mode::Folder => folder_mode(encrypt, args.input, args.output, Some(args.magic)),
             }
         }
         Command::Decrypt(args) => {
-            match args.mode {
+            let mode = Mode::from((args.input.clone(), args.output.clone()));
+
+            match mode {
                 Mode::File => file_mode(encrypt, args.input, args.output, None),
                 Mode::Folder => folder_mode(encrypt, args.input, args.output, None),
             }
@@ -54,10 +58,10 @@ fn file_mode(encrypt: bool, input: PathBuf, output: PathBuf, magic: Option<Magic
 
     // Ignore the input file if it's already encrypted (or vice versa)
     if encrypt && EncryptedFile::is_encrypted(&input) {
-        log::info!("Ignoring encrypted file: {}", input.to_str().unwrap());
+        log::warn!("Ignoring encrypted file: {}", input.to_str().unwrap());
         return;
     } else if !encrypt && !EncryptedFile::is_encrypted(&input) {
-        log::info!("Ignoring unencrypted file: {}", input.to_str().unwrap());
+        log::warn!("Ignoring unencrypted file: {}", input.to_str().unwrap());
         return;
     }
 
@@ -112,10 +116,10 @@ fn folder_mode(encrypt: bool, input: PathBuf, output: PathBuf, magic: Option<Mag
 
         // Ignore the input file if it's already encrypted (or vice versa)
         if encrypt && EncryptedFile::is_encrypted(&file) {
-            log::info!("Ignoring encrypted file: {}", input_path);
+            log::warn!("Ignoring encrypted file: {}", input_path);
             continue;
         } else if !encrypt && !EncryptedFile::is_encrypted(&file) {
-            log::info!("Ignoring unencrypted file: {}", input_path);
+            log::warn!("Ignoring unencrypted file: {}", input_path);
             continue;
         }
 
