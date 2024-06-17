@@ -1,4 +1,5 @@
-use aes_gcm::{aead::{Aead, OsRng}, AeadCore, Aes256Gcm, KeyInit};
+use aes_gcm::{aead::{generic_array::GenericArray, Aead, OsRng, Payload}, Aes256Gcm, KeyInit};
+use rand::Rng;
 
 const CONTENT_KEY: [u8; 32] = [
     0x50, 0x1b, 0x9f, 0x4e, 0xa5, 0xa0, 0x30, 0x1f,
@@ -19,6 +20,12 @@ pub enum Keys {
     Header,
 }
 
+pub struct EncryptionResult {
+    pub nonce: [u8; 12],
+    pub ciphertext: Vec<u8>,
+    pub aad: [u8; 4],
+}
+
 pub struct AES {
     cipher: Aes256Gcm,
 }
@@ -35,14 +42,29 @@ impl AES {
         }
     }
 
-    pub fn encrypt_ctr(&self, data: &[u8]) -> (Vec<u8>, Vec<u8>) {
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    pub fn encrypt_ctr(&self, data: &[u8]) -> EncryptionResult {
+        let nonce: [u8; 12] = OsRng.gen();
+        let nonce_array = GenericArray::from_slice(&nonce);
 
-        (self.cipher.encrypt(&nonce, data.as_ref()).unwrap(), nonce.to_vec())
+        let mut crc32 = crc32fast::Hasher::new();
+        crc32.update(data);
+        let aad: [u8; 4] = crc32.finalize().to_le_bytes();
+
+        let payload = Payload {
+            aad: &aad,
+            msg: data,
+        };
+
+        let ciphertext = self.cipher.encrypt(nonce_array, payload).unwrap();
+
+        EncryptionResult {
+            nonce,
+            ciphertext,
+            aad,
+        }
     }
 
-    #[allow(dead_code)]
-    pub fn decrypt_ctr(&self, data: &[u8], nonce: &[u8]) -> Vec<u8> {
-        self.cipher.decrypt(nonce.into(), data.as_ref()).unwrap()
+    pub fn decrypt_ctr(&self, payload: Payload, nonce: &[u8; 12]) -> Result<Vec<u8>, String> {
+        self.cipher.decrypt(nonce.into(), payload).map_err(|e| e.to_string())
     }
 }

@@ -49,9 +49,9 @@ pub enum Mode {
 
 impl From<(PathBuf, PathBuf)> for Mode {
     fn from(paths: (PathBuf, PathBuf)) -> Self {
-        if paths.0.is_file() && paths.1.is_file() {
+        if paths.0.is_file() && (paths.1.is_file() || !paths.1.exists()) {
             Self::File
-        } else if paths.0.is_dir() && paths.1.is_dir() {
+        } else if paths.0.is_dir() && (paths.1.is_dir() || !paths.1.exists()) {
             Self::Folder
         } else {
             panic!("Input and output paths must be of the same type");

@@ -1,4 +1,6 @@
-use std::{fs::File, io::Read, path::PathBuf};
+use std::{fs::File, io::{BufReader, BufWriter, Read, Write}, path::PathBuf};
+
+use aes_gcm::aead::Payload;
 
 use crate::{aes::{Keys, AES}, Magic};
 
@@ -15,25 +17,12 @@ pub const MAGIC_NUMBERS: [u64; 8] = [
     0xCF04B8ECA23CDB6C
 ];
 
-#[repr(u8)]
-#[derive(Debug, Copy, Clone)]
-pub enum Algorithm {
-    AES256GCM
-}
-
-impl Algorithm {
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        match bytes[0] {
-            0 => Self::AES256GCM,
-            _ => panic!("Invalid algorithm")
-        }
-    }
-}
-
 #[allow(dead_code)]
 pub struct EncryptedFile {
     pub magic: Magic,
-    pub nonce: Vec<u8>,
+    
+    pub header_nonce: [u8; 12],
+    pub header_crc32: [u8; 4],
 
     pub header: Header,
     pub header_plaintext: Vec<u8>,
@@ -44,12 +33,10 @@ pub struct EncryptedFile {
 }
 
 pub struct Header {
-    pub path_length: u8,
     pub path: String,
 
-    pub nonce: Vec<u8>,
-
-    pub algorithm: Algorithm,
+    pub content_nonce: [u8; 12],
+    pub content_crc32: [u8; 4],
 }
 
 impl EncryptedFile {
@@ -74,164 +61,174 @@ impl EncryptedFile {
 
         // Encrypt the file
         let aes = AES::new(Keys::Content);
-        let (ciphertext, nonce) = aes.encrypt_ctr(&mut plaintext);
+        let content_encryption_result = aes.encrypt_ctr(&mut plaintext);
 
         let path_str = path.to_str().unwrap();
 
         let header = Header {
-            path_length: path_str.len() as u8,
             path: path_str.to_string(),
 
-            nonce,
-
-            algorithm: Algorithm::AES256GCM,
+            content_nonce: content_encryption_result.nonce,
+            content_crc32: content_encryption_result.aad,
         };
 
         // Encrypt the header
         let header_bytes = header.to_bytes();
         let aes = AES::new(Keys::Header);
-        let (encrypted_header, nonce) = aes.encrypt_ctr(&header_bytes);
+        let header_encryption_result = aes.encrypt_ctr(&header_bytes);
 
         Self {
             magic,
-            nonce,
+            
+            header_nonce: header_encryption_result.nonce,
+            header_crc32: header_encryption_result.aad,
             
             header,
             header_plaintext: header_bytes,
-            header_ciphertext: encrypted_header,
+            header_ciphertext: header_encryption_result.ciphertext,
 
             plaintext,
-            ciphertext
+            ciphertext: content_encryption_result.ciphertext,
         }
     }
 }
 
 impl EncryptedFile {
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
+        let mut buffer = Vec::new();
+        
+        {
+            let mut writer = BufWriter::new(&mut buffer);
 
-        // Write the magic string
-        bytes.extend_from_slice(&self.magic.to_bytes());
+            writer.write_all(&self.magic.to_bytes()).unwrap();
 
-        // Write the nonce
-        bytes.push(self.nonce.len() as u8);
-        bytes.extend_from_slice(&self.nonce);
+            writer.write_all(&self.header_nonce).unwrap();
+            writer.write_all(&self.header_crc32).unwrap();
 
-        // Write the header
-        bytes.push(self.header_ciphertext.len() as u8);
-        bytes.extend_from_slice(&self.header_ciphertext);
+            writer.write_all(&(self.header_ciphertext.len() as u16).to_le_bytes()).unwrap();
+            writer.write_all(&self.header_ciphertext).unwrap();
 
-        // Write the ciphertext
-        bytes.push(self.ciphertext.len() as u8);
-        bytes.extend_from_slice(&self.ciphertext);
+            writer.write_all(&(self.ciphertext.len() as u64).to_le_bytes()).unwrap();
+            writer.write_all(&self.ciphertext).unwrap();
 
-        bytes
+            writer.flush().unwrap();
+        }
+
+        buffer
     }
 
     #[allow(dead_code)]
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        let mut offset = 0;
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        let mut reader = BufReader::new(bytes);
 
-        // Read the magic string
+        // Read file
         let mut magic = [0; 8];
-        magic.copy_from_slice(&bytes[offset..offset + 8]);
-        offset += 8;
+        reader.read_exact(&mut magic).unwrap();
 
-        let magic = Magic::from_bytes(&magic).expect("Invalid magic");
+        // Check magic
+        let magic = Magic::from_bytes(&magic)
+            .map_err(|_| "Invalid magic")?;
 
-        // Read the nonce
-        let nonce_length = bytes[offset];
-        offset += 1;
+        let mut header_nonce = [0; 12];
+        reader.read_exact(&mut header_nonce).unwrap();
 
-        let mut nonce = Vec::new();
-        nonce.extend_from_slice(&bytes[offset..offset + nonce_length as usize]);
-        offset += nonce_length as usize;
+        let mut header_crc32 = [0; 4];
+        reader.read_exact(&mut header_crc32).unwrap();
 
-        // Read the header
-        let header_length = bytes[offset];
-        offset += 1;
+        let mut header_length = [0; 2];
+        reader.read_exact(&mut header_length).unwrap();
 
-        let mut header_ciphertext = Vec::new();
-        header_ciphertext.extend_from_slice(&bytes[offset..offset + header_length as usize]);
-        offset += header_length as usize;
+        let mut header_ciphertext = vec![0; u16::from_le_bytes(header_length) as usize];
+        reader.read_exact(&mut header_ciphertext).unwrap();
 
-        // Read the ciphertext
-        let ciphertext_length = bytes[offset];
-        offset += 1;
+        let mut ciphertext_length = [0; 8];
+        reader.read_exact(&mut ciphertext_length).unwrap();
 
-        let mut ciphertext = Vec::new();
-        ciphertext.extend_from_slice(&bytes[offset..offset + ciphertext_length as usize]);
+        let mut ciphertext = vec![0; u64::from_le_bytes(ciphertext_length) as usize];
+        reader.read_exact(&mut ciphertext).unwrap();
 
-        // Decrypt the header
+        // Decrypt header
         let aes = AES::new(Keys::Header);
-        let header_bytes = aes.decrypt_ctr(&header_ciphertext, &nonce);
-
-        // Parse the header
+        let header_payload = Payload {
+            aad: &header_crc32,
+            msg: &header_ciphertext,
+        };
+        let header_bytes = aes.decrypt_ctr(header_payload, &header_nonce).unwrap();
         let header = Header::from_bytes(&header_bytes);
 
-        // Decrypt the ciphertext
+        // Decrypt content
         let aes = AES::new(Keys::Content);
-        let plaintext = aes.decrypt_ctr(&ciphertext, &header.nonce);
+        let content_payload = Payload {
+            aad: &header.content_crc32,
+            msg: &ciphertext,
+        };
 
-        Self {
+        let plaintext = aes.decrypt_ctr(content_payload, &header.content_nonce).unwrap();
+
+        // Check plaintext CRC32
+        let mut crc32 = crc32fast::Hasher::new();
+        crc32.update(&plaintext);
+        if crc32.finalize().to_le_bytes() != header.content_crc32 {
+            return Err("Invalid CRC32".to_string());
+        }
+
+        Ok(Self {
             magic,
-            nonce,
-
+            
+            header_nonce,
+            header_crc32,
+            
             header,
             header_plaintext: header_bytes,
             header_ciphertext,
-
+            
             plaintext,
-            ciphertext
-        }
+            ciphertext,
+        })
     }
 }
 
 impl Header {
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
+        let mut buffer = Vec::new();
+        
+        {
+            let mut writer = BufWriter::new(&mut buffer);
 
-        // Write the path
-        bytes.push(self.path_length);
-        bytes.extend_from_slice(self.path.as_bytes());
+            writer.write_all(&(self.path.len() as u32).to_le_bytes()).unwrap();
+            writer.write_all(self.path.as_bytes()).unwrap();
 
-        // Write the nonce
-        bytes.push(self.nonce.len() as u8);
-        bytes.extend_from_slice(&self.nonce);
+            writer.write_all(&self.content_nonce).unwrap();
+            writer.write_all(&self.content_crc32).unwrap();
 
-        // Write the algorithm
-        bytes.push(self.algorithm as u8);
+            writer.flush().unwrap();
+        }
 
-        bytes
+        buffer
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        let mut offset = 0;
+        let mut reader = BufReader::new(bytes);
 
-        // Read the path
-        let path_length = bytes[offset];
-        offset += 1;
+        let mut path_length = [0; 4];
+        reader.read_exact(&mut path_length).unwrap();
 
-        let mut path = Vec::new();
-        path.extend_from_slice(&bytes[offset..offset + path_length as usize]);
-        offset += path_length as usize;
+        let mut path = vec![0; u32::from_le_bytes(path_length) as usize];
+        reader.read_exact(&mut path).unwrap();
 
-        // Read the nonce
-        let nonce_length = bytes[offset];
-        offset += 1;
+        let path = String::from_utf8(path).unwrap();
 
-        let mut nonce = Vec::new();
-        nonce.extend_from_slice(&bytes[offset..offset + nonce_length as usize]);
-        offset += nonce_length as usize;
+        let mut content_nonce = [0; 12];
+        reader.read_exact(&mut content_nonce).unwrap();
 
-        // Read the algorithm
-        let algorithm = bytes[offset];
+        let mut content_crc32 = [0; 4];
+        reader.read_exact(&mut content_crc32).unwrap();
 
         Self {
-            path_length,
-            path: String::from_utf8(path).unwrap(),
-            nonce,
-            algorithm: Algorithm::from_bytes(&[algorithm])
+            path,
+
+            content_nonce,
+            content_crc32,
         }
     }
 }

@@ -1,4 +1,4 @@
-use std::{io::Read, path::PathBuf, sync::{Arc, Mutex}};
+use std::{path::PathBuf, sync::{Arc, Mutex}};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 
@@ -30,10 +30,7 @@ pub fn add_folder_recursive(files: &mut Vec<PathBuf>, folder: PathBuf) {
                 return;
             }
 
-            // Ignore files that start with the magic bytes (already encrypted)
-            let mut file = std::fs::File::open(&path).unwrap();
-            let mut magic = [0; 8];
-            file.read_exact(&mut magic).unwrap();
+            log::info!("Adding file: {}", path.to_str().unwrap());
 
             files.push(path);
         });

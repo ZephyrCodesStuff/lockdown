@@ -1,8 +1,9 @@
-use std::{io::Write, path::PathBuf};
+use std::{fs::File, io::{Read, Write}, path::PathBuf};
 
 use args::{Args, Command, Magic, Mode};
 use clap::Parser;
 use file::EncryptedFile;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use utils::add_folder_recursive;
 
 mod args;
@@ -66,7 +67,6 @@ fn file_mode(encrypt: bool, input: PathBuf, output: PathBuf, magic: Option<Magic
     }
 
     let input_path = input.as_path().to_str().unwrap().to_string();
-    let ciphertext = std::fs::read(&input).unwrap();
     let mut output = std::fs::File::create(output).unwrap();
 
     // Process the input file
@@ -74,7 +74,17 @@ fn file_mode(encrypt: bool, input: PathBuf, output: PathBuf, magic: Option<Magic
         let encrypted = EncryptedFile::new(input, magic.unwrap());
         output.write_all(&encrypted.to_bytes()).unwrap();
     } else {
+        let ciphertext = File::open(input).unwrap();
+        let ciphertext = std::io::BufReader::new(ciphertext).bytes().collect::<Result<Vec<u8>, _>>().unwrap();
+
         let encrypted = EncryptedFile::from_bytes(&ciphertext);
+
+        if let Err(e) = encrypted {
+            log::error!("Failed to decrypt file: {}", e);
+            std::process::exit(1);
+        }
+
+        let encrypted = encrypted.unwrap();
         output.write_all(&encrypted.plaintext).unwrap();
     }
 
@@ -104,7 +114,7 @@ fn folder_mode(encrypt: bool, input: PathBuf, output: PathBuf, magic: Option<Mag
     add_folder_recursive(&mut files, input.clone());
 
     // Process each file
-    for file in files {
+    files.par_iter().for_each(|file| {
         let input_path = file.as_path().to_str().unwrap().to_string();
         let mut output_path = {
             let mut output_path = output.clone();
@@ -117,10 +127,10 @@ fn folder_mode(encrypt: bool, input: PathBuf, output: PathBuf, magic: Option<Mag
         // Ignore the input file if it's already encrypted (or vice versa)
         if encrypt && EncryptedFile::is_encrypted(&file) {
             log::warn!("Ignoring encrypted file: {}", input_path);
-            continue;
+            return;
         } else if !encrypt && !EncryptedFile::is_encrypted(&file) {
             log::warn!("Ignoring unencrypted file: {}", input_path);
-            continue;
+            return;
         }
 
         // Create the output directory if it doesn't exist
@@ -130,16 +140,25 @@ fn folder_mode(encrypt: bool, input: PathBuf, output: PathBuf, magic: Option<Mag
             }
         }
 
-        let ciphertext = std::fs::read(&file).unwrap();
-
         // Process the input file
         if encrypt {
-            let encrypted = EncryptedFile::new(file, magic.unwrap());
+            let encrypted = EncryptedFile::new(file.to_owned(), magic.unwrap());
 
             let mut output = std::fs::File::create(&output_path).unwrap();
             output.write_all(&encrypted.to_bytes()).unwrap();
         } else {
+            let ciphertext_file = File::open(file).unwrap();
+            let ciphertext = std::io::BufReader::new(ciphertext_file).bytes().collect::<Result<Vec<u8>, _>>().unwrap();
+
             let encrypted = EncryptedFile::from_bytes(&ciphertext);
+
+            if let Err(e) = encrypted {
+                log::error!("Failed to decrypt file: {}", e);
+                return;
+            }
+
+            let encrypted = encrypted.unwrap();
+
             let original_extension = file.extension().unwrap().to_str().unwrap();
             output_path.set_extension(original_extension);
 
@@ -149,5 +168,5 @@ fn folder_mode(encrypt: bool, input: PathBuf, output: PathBuf, magic: Option<Mag
 
         let action = if encrypt { "Encrypted" } else { "Decrypted" };
         log::info!("{} file: {}", action, input_path);
-    }
+    });
 }
