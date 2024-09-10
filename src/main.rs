@@ -1,6 +1,6 @@
 use std::{fs::File, io::{Read, Write}, path::PathBuf};
 
-use args::{Args, Command, Magic, Mode};
+use args::{Args, Command, Mode};
 use clap::Parser;
 use file::EncryptedFile;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
@@ -30,22 +30,22 @@ fn main() {
             let mode = Mode::from((args.input.clone(), args.output.clone()));
 
             match mode {
-                Mode::File => file_mode(encrypt, args.input, args.output, Some(args.magic)),
-                Mode::Folder => folder_mode(encrypt, args.input, args.output, Some(args.magic)),
+                Mode::File => file_mode(encrypt, args.input, args.output),
+                Mode::Folder => folder_mode(encrypt, args.input, args.output),
             }
         }
         Command::Decrypt(args) => {
             let mode = Mode::from((args.input.clone(), args.output.clone()));
 
             match mode {
-                Mode::File => file_mode(encrypt, args.input, args.output, None),
-                Mode::Folder => folder_mode(encrypt, args.input, args.output, None),
+                Mode::File => file_mode(encrypt, args.input, args.output),
+                Mode::Folder => folder_mode(encrypt, args.input, args.output),
             }
         }
     }
 }
 
-fn file_mode(encrypt: bool, input: PathBuf, output: PathBuf, magic: Option<Magic>) {
+fn file_mode(encrypt: bool, input: PathBuf, output: PathBuf) {
     // Ensure both input and output paths are files
     if !input.is_file() {
         log::error!("Input path is not a file");
@@ -71,7 +71,7 @@ fn file_mode(encrypt: bool, input: PathBuf, output: PathBuf, magic: Option<Magic
 
     // Process the input file
     if encrypt {
-        let encrypted = EncryptedFile::new(input, magic.unwrap());
+        let encrypted = EncryptedFile::new(input);
         output.write_all(&encrypted.to_bytes()).unwrap();
     } else {
         let ciphertext = File::open(input).unwrap();
@@ -92,7 +92,7 @@ fn file_mode(encrypt: bool, input: PathBuf, output: PathBuf, magic: Option<Magic
     log::info!("{} file: {}", action, input_path);
 }
 
-fn folder_mode(encrypt: bool, input: PathBuf, output: PathBuf, magic: Option<Magic>) {
+fn folder_mode(encrypt: bool, input: PathBuf, output: PathBuf) {
     // Ensure the input path is a directory
     if !input.is_dir() {
         log::error!("Input path is not a directory");
@@ -142,7 +142,7 @@ fn folder_mode(encrypt: bool, input: PathBuf, output: PathBuf, magic: Option<Mag
 
         // Process the input file
         if encrypt {
-            let encrypted = EncryptedFile::new(file.to_owned(), magic.unwrap());
+            let encrypted = EncryptedFile::new(file.to_owned());
 
             let mut output = std::fs::File::create(&output_path).unwrap();
             output.write_all(&encrypted.to_bytes()).unwrap();

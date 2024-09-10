@@ -1,26 +1,15 @@
-use std::{fs::File, io::{BufReader, BufWriter, Read, Write}, path::PathBuf};
+use std::{fs::File, io::{BufReader, BufWriter, Cursor, Read, Seek, Write}, path::PathBuf};
 
 use aes_gcm::aead::Payload;
 
-use crate::{aes::{Keys, AES}, Magic};
+use crate::aes::{Keys, AES};
 
 // b"LOCKDOWN" as u64
-pub const MAGIC: &[u8; 8] = b"LOCKDOWN";
-pub const MAGIC_NUMBERS: [u64; 8] = [
-    0x7DB89D51EE5610B8,
-    0xB548CC18F4F23044,
-    0xC6F016239C36A278,
-    0xF937DFBA56986CF4,
-    0xD59AB31623E0AF72,
-    0x5CECAC3E1F4944D7,
-    0xD49623671F2E468D,
-    0xCF04B8ECA23CDB6C
-];
+pub const MAGIC: u64 = 0x_2003_05_24___2005_12_15;
+const MAX_CHUNK_SIZE: usize = 1024 * 1024 * 10; // 10MB
 
 #[allow(dead_code)]
 pub struct EncryptedFile {
-    pub magic: Magic,
-    
     pub header_nonce: [u8; 12],
     pub header_crc32: [u8; 4],
 
@@ -42,19 +31,36 @@ pub struct Header {
 impl EncryptedFile {
     pub fn is_encrypted(path: &PathBuf) -> bool {
         let mut file = File::open(path).unwrap();
-        let mut magic = [0; 8];
-        file.read_exact(&mut magic).unwrap();
+        let mut magic_hash = [0; 20];
 
-        if &magic == MAGIC {
-            true
-        } else if MAGIC_NUMBERS.iter().any(|&m| m.to_le_bytes() == magic) {
-            true
-        } else {
-            false
+        match file.read_exact(&mut magic_hash) {
+            Ok(_) => {},
+            Err(e) => match e.kind() {
+                // File is too small to contain magic hash -- not encrypted
+                std::io::ErrorKind::UnexpectedEof => return false,
+                _ => panic!("Failed to read magic hash: {}", e),
+            }
         }
+
+        let mut hasher = sha1_smol::Sha1::new();
+        
+        // Read file in chunks
+        let mut buffer = vec![0; MAX_CHUNK_SIZE];
+        loop {
+            let bytes_read = file.read(&mut buffer).unwrap();
+            if bytes_read == 0 {
+                break;
+            }
+
+            hasher.update(&buffer[..bytes_read]);
+        }
+
+        hasher.update(&MAGIC.to_le_bytes());
+
+        hasher.digest().bytes() == magic_hash
     }
 
-    pub fn new(path: PathBuf, magic: Magic) -> Self {
+    pub fn new(path: PathBuf) -> Self {
         let mut plaintext = Vec::new();
         let mut file = File::open(path.clone()).unwrap();
         file.read_to_end(&mut plaintext).unwrap();
@@ -78,8 +84,6 @@ impl EncryptedFile {
         let header_encryption_result = aes.encrypt_ctr(&header_bytes);
 
         Self {
-            magic,
-            
             header_nonce: header_encryption_result.nonce,
             header_crc32: header_encryption_result.aad,
             
@@ -95,12 +99,10 @@ impl EncryptedFile {
 
 impl EncryptedFile {
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buffer = Vec::new();
+        let mut buffer_data = Vec::new();
         
         {
-            let mut writer = BufWriter::new(&mut buffer);
-
-            writer.write_all(&self.magic.to_bytes()).unwrap();
+            let mut writer = BufWriter::new(&mut buffer_data);
 
             writer.write_all(&self.header_nonce).unwrap();
             writer.write_all(&self.header_crc32).unwrap();
@@ -114,20 +116,34 @@ impl EncryptedFile {
             writer.flush().unwrap();
         }
 
-        buffer
+        let mut buffer_magic = Vec::new();
+        
+        {
+            let mut writer = BufWriter::new(&mut buffer_magic);
+
+            // Calculate magic hash
+            let mut hasher = sha1_smol::Sha1::new();
+
+            hasher.update(&buffer_data);
+            hasher.update(&MAGIC.to_le_bytes());
+
+            let magic_hash = hasher.digest().bytes();
+            writer.write_all(&magic_hash).unwrap();
+
+            writer.flush().unwrap();
+        }
+
+        buffer_magic.extend(buffer_data);
+
+        buffer_magic
     }
 
     #[allow(dead_code)]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
-        let mut reader = BufReader::new(bytes);
+        let mut reader = Cursor::new(bytes);
 
-        // Read file
-        let mut magic = [0; 8];
-        reader.read_exact(&mut magic).unwrap();
-
-        // Check magic
-        let magic = Magic::from_bytes(&magic)
-            .map_err(|_| "Invalid magic")?;
+        // Skip magic hash
+        reader.seek(std::io::SeekFrom::Start(20)).unwrap();
 
         let mut header_nonce = [0; 12];
         reader.read_exact(&mut header_nonce).unwrap();
@@ -173,8 +189,6 @@ impl EncryptedFile {
         }
 
         Ok(Self {
-            magic,
-            
             header_nonce,
             header_crc32,
             
