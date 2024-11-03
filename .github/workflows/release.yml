@@ -23,7 +23,7 @@ jobs:
       -
         name: Set envvar `CARGO_VERSION` to the version from Cargo.toml
         id: set_cargo_version
-        run: echo ::set-env name=CARGO_VERSION::$(grep -oP '^version = "\K[^"]+' Cargo.toml)
+        run: echo "CARGO_VERSION=$(cargo pkgid | cut -d# -f2)" >> $GITHUB_ENV
       -
         name: Create Release (Linux x86_64)
         id: create_release
@@ -32,5 +32,5 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           files: target/release/lockdown
-          tag_name: v${{ steps.set_cargo_version.outputs.CARGO_VERSION }}
-          release_name: Release ${{ steps.set_cargo_version.outputs.CARGO_VERSION }} (Linux x86_64)
+          tag_name: ${{ env.CARGO_VERSION }} (Linux x86_64)
+          release_name: Release
