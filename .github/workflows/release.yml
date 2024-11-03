@@ -1,0 +1,57 @@
+# Build and release a new version of the package on every push to the main branch
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - 
+        name: Checkout code
+        uses: actions/checkout@v2
+      -
+        name: Set up Rust
+        uses: actions/setup-rust@v1
+        with:
+          rust-version: stable
+      -
+        name: Build
+        run: cargo build --release
+  
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - 
+        name: Checkout code
+        uses: actions/checkout@v2
+      -
+        name: Get version from Cargo.toml
+        id: get_version
+        run: echo ::set-output name=version::$(grep -oP '^version = "\K[^"]+' Cargo.toml)
+      -
+        name: Create Release (Linux x86_64)
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: target/release/lockdown
+          tag_name: v${{ steps.get_version.outputs.version }}
+          release_name: Release ${{ steps.get_version.outputs.version }} (Linux x86_64)
+      -
+        name: Upload Release Asset
+        id: upload-release-asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: target/release/lockdown
+          asset_name: lockdown
+          asset_content_type: application/octet-stream
